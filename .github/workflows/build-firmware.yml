@@ -116,6 +116,18 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
+      - name: Fetch extra packages (filebrowser)
+        run: |
+          set -e
+          rm -rf /tmp/kz
+          git clone -q --depth 1 --filter=blob:none --sparse https://github.com/kenzok8/small-package /tmp/kz
+          cd /tmp/kz
+          git sparse-checkout set filebrowser luci-app-filebrowser
+          cd "$GITHUB_WORKSPACE"
+          cp -r /tmp/kz/filebrowser /tmp/kz/luci-app-filebrowser package/
+          echo "--- 已放入 ---"
+          ls -d package/filebrowser package/luci-app-filebrowser
+
       - name: Clone OpenClash (pinned)
         if: ${{ github.event.inputs.enable_openclash != 'false' }}
         run: |
