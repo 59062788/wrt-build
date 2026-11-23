@@ -40,7 +40,7 @@ on:
 
 env:
   # 方案 B 才需要填；方案 A 留空即可
-  UPSTREAM_REPO: ""
+  UPSTREAM_REPO: "fanchmwrt/fanchmwrt"
   UPSTREAM_BRANCH: "fanchmwrt-25.12.6"
   OPENCLASH_COMMIT: "e553e82e01c697aefbe1555261a503f425e00ccd"
 
@@ -66,16 +66,20 @@ jobs:
       - name: Prepare OpenWrt source tree
         run: |
           set -e
-          if [ -n "${{ env.UPSTREAM_REPO }}" ]; then
-            echo "Cloning upstream $UPSTREAM_REPO @ $UPSTREAM_BRANCH"
-            git clone --depth 1 -b "$UPSTREAM_BRANCH" "https://github.com/${UPSTREAM_REPO}.git" .
-            cp -rf .repo-overlay/config .repo-overlay/feeds.conf.append .repo-overlay/.github ./ 2>/dev/null || true
-          else
-            # 方案 A: 当前 checkout 目录本身就是源码，把 overlay 内容移到位
-            shopt -s dotglob
-            mv .repo-overlay/* ./
+          if [ -z "${{ env.UPSTREAM_REPO }}" ]; then
+            echo "UPSTREAM_REPO 为空，无法继续"; exit 1
           fi
+          echo "Cloning upstream ${{ env.UPSTREAM_REPO }} @ ${{ env.UPSTREAM_BRANCH }}"
+          cp -f .repo-overlay/.github/workflows/build-firmware.yml /tmp/self-wf.yml
+          git clone --depth 1 -b "${{ env.UPSTREAM_BRANCH }}" "https://github.com/${{ env.UPSTREAM_REPO }}.git" /tmp/wrt-src
+          shopt -s dotglob
+          mv /tmp/wrt-src/* ./ || true
+          rm -rf /tmp/wrt-src
+          cp -f .repo-overlay/config/x86_64-full.config ./config/x86_64-full.config 2>/dev/null || cp -rf .repo-overlay/config ./ 2>/dev/null || true
+          cp -f .repo-overlay/feeds.conf.append ./feeds.conf.append
           rm -rf .repo-overlay
+          mkdir -p .github/workflows && cp -f /tmp/self-wf.yml .github/workflows/build-firmware.yml
+          test -x ./scripts/feeds && echo "source tree OK"
           echo "--- version ---"
           cat version 2>/dev/null || true
 
