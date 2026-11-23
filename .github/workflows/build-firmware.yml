@@ -1,0 +1,166 @@
+# ============================================================================
+# FanchmWrt x86_64 全功能+ 固件云编译（v3）
+#
+# 方案 A: Fork fanchmwrt/fanchmwrt，把 config/、feeds.conf.append、
+#   .github/workflows/build-firmware.yml 放进 fork 根目录。
+# 方案 B: 顶部 env 填 UPSTREAM_REPO / UPSTREAM_BRANCH，先拉上游再叠加配置。
+#
+# v3 要点:
+#   * 在 v2 基础上加满：两套代理 + V2RayA + frp 双向 + cloudflared + tailscale
+#     + zerotier + mwan3 + upnp + samba4 + aria2 + transmission + docker(+compose)
+#     + adguardhome + ttyd + netdata + hd-idle + wol + openvpn 面板
+#   * rootfs 默认抬到 1024MB
+#   * job 超时按 GitHub 上限设 360 分钟
+#   * make defconfig 后断言：配置里写了但树里不存在的包直接报红
+#
+# 产物: bin/targets/x86/64/ 下 squashfs-combined 镜像即 sysupgrade 升级包。
+# ============================================================================
+
+name: Build FanchmWrt x86_64 Full Plus
+
+on:
+  workflow_dispatch:
+    inputs:
+      enable_passwall2:
+        description: "编译 PassWall2 (true/false)"
+        default: "true"
+        required: false
+      enable_openclash:
+        description: "编译 OpenClash (true/false)"
+        default: "true"
+        required: false
+      rootfs_partsize:
+        description: "rootfs 分区大小 MB (默认 1024)"
+        default: "1024"
+        required: false
+      make_jobs:
+        description: "编译并发数 (默认 2，内存偏小请保持 2)"
+        default: "2"
+        required: false
+
+env:
+  # 方案 B 才需要填；方案 A 留空即可
+  UPSTREAM_REPO: "fanchmwrt/fanchmwrt"
+  UPSTREAM_BRANCH: "fanchmwrt-25.12.6"
+  OPENCLASH_COMMIT: "e553e82e01c697aefbe1555261a503f425e00ccd"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          path: .repo-overlay
+
+      - name: Prepare OpenWrt source tree
+        run: |
+          set -e
+          if [ -n "${{ env.UPSTREAM_REPO }}" ]; then
+            echo "Cloning upstream $UPSTREAM_REPO @ $UPSTREAM_BRANCH"
+            git clone --depth 1 -b "$UPSTREAM_BRANCH" "https://github.com/${UPSTREAM_REPO}.git" .
+            cp -rf .repo-overlay/config .repo-overlay/feeds.conf.append .repo-overlay/.github ./ 2>/dev/null || true
+          else
+            # 方案 A: 当前 checkout 目录本身就是源码，把 overlay 内容移到位
+            shopt -s dotglob
+            mv .repo-overlay/* ./
+          fi
+          rm -rf .repo-overlay
+          echo "--- version ---"
+          cat version 2>/dev/null || true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang flex bison gawk \
+            gcc-multilib g++-multilib gettext git libncurses-dev \
+            libssl-dev python3-distutils rsync unzip zlib1g-dev \
+            file wget python3 python3-setuptools swig libyaml-dev \
+            subversion pkg-config
+
+      - name: Append third-party feeds
+        run: |
+          if [ -f feeds.conf.append ]; then
+            cat feeds.conf.append >> feeds.conf.default
+          fi
+          cat feeds.conf.default
+
+      - name: Update & install feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Clone OpenClash (pinned)
+        if: ${{ github.event.inputs.enable_openclash != 'false' }}
+        run: |
+          set -e
+          git clone https://github.com/vernesong/OpenClash.git /tmp/oc
+          git -C /tmp/oc checkout "${{ env.OPENCLASH_COMMIT }}"
+          mkdir -p package/luci-app-openclash
+          cp -r /tmp/oc/luci-app-openclash/. package/luci-app-openclash/
+          ls package/luci-app-openclash
+
+      - name: Write .config
+        run: |
+          set -e
+          cp config/x86_64-full.config .config
+
+          # 按开关剔除未启用的代理
+          if [ "${{ github.event.inputs.enable_passwall2 }}" = "false" ]; then
+            sed -i '/luci-app-passwall2/d' .config
+          fi
+          if [ "${{ github.event.inputs.enable_openclash }}" = "false" ]; then
+            sed -i '/luci-app-openclash/d' .config
+          fi
+
+          # rootfs 分区大小
+          sed -i "s/^CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=${{ github.event.inputs.rootfs_partsize }}/" .config
+
+          # 记下“我要求的包”，供 defconfig 之后断言用
+          grep -E '^CONFIG_PACKAGE_[A-Za-z0-9_.-]+=y$' .config > /tmp/wanted.config || true
+          echo "--- wanted count: $(wc -l < /tmp/wanted.config) ---"
+          grep -E 'CONFIG_TARGET_x86|luci-app-passwall2|luci-app-openclash|ROOTFS_PARTSIZE' .config || true
+
+      - name: Defconfig
+        run: make defconfig
+
+      - name: Assert requested packages survived defconfig
+        run: |
+          missing=0
+          while read -r line; do
+            [ -z "$line" ] && continue
+            if ! grep -qxF "$line" .config; then
+              echo "::warning::MISSING PACKAGE -> ${line%%=*} (该符号在源码树/feed 中不存在，已未被选中)"
+              missing=$((missing+1))
+              echo "${line%%=*}" >> /tmp/missing.list
+            fi
+          done < /tmp/wanted.config
+          echo "--- missing: $missing ---"
+          if [ "$missing" -gt 0 ]; then
+            echo "以下包没编进去，请核对名字或 feed："
+            cat /tmp/missing.list
+            exit 1
+          fi
+          echo "全部要求的包均已进入 .config"
+
+      - name: Compile firmware
+        run: |
+          jobs="${{ github.event.inputs.make_jobs }}"
+          make -j"${jobs:-2}" V=s
+
+      - name: List firmware outputs
+        run: |
+          echo "=== bin/targets/x86/64 ==="
+          ls -lh bin/targets/x86/64/ 2>/dev/null || true
+          find bin/targets/x86/64/ -maxdepth 1 -type f \( -name "*.img.gz" -o -name "*.img" -o -name "*.manifest" \) -print
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fanchmwrt-x86_64-full
+          path: bin/targets/x86/64/
+          retention-days: 14
+          if-no-files-found: error
