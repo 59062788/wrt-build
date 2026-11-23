@@ -120,8 +120,21 @@ jobs:
         if: ${{ github.event.inputs.enable_openclash != 'false' }}
         run: |
           set -e
-          git clone https://github.com/vernesong/OpenClash.git /tmp/oc
-          git -C /tmp/oc checkout "${{ env.OPENCLASH_COMMIT }}"
+          SHA="${{ env.OPENCLASH_COMMIT }}"
+          rm -rf /tmp/oc && mkdir -p /tmp/oc && cd /tmp/oc
+          git init -q
+          git remote add origin https://github.com/vernesong/OpenClash.git
+          if git fetch -q --depth 1 origin "$SHA" 2>/dev/null; then
+            git checkout -q FETCH_HEAD
+            echo "shallow fetch OK ($SHA)"
+          else
+            echo "shallow fetch failed, fallback to shallow clone"
+            cd /tmp && rm -rf /tmp/oc
+            git clone -q --depth 1 https://github.com/vernesong/OpenClash.git /tmp/oc
+            git -C /tmp/oc fetch -q --depth 1 origin "$SHA" || true
+            git -C /tmp/oc checkout -q "$SHA" || echo "::warning::using default branch head"
+          fi
+          cd "$GITHUB_WORKSPACE"
           mkdir -p package/luci-app-openclash
           cp -r /tmp/oc/luci-app-openclash/. package/luci-app-openclash/
           ls package/luci-app-openclash
