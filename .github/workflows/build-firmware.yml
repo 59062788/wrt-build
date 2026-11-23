@@ -58,18 +58,25 @@ jobs:
       - name: Prepare OpenWrt source tree
         run: |
           set -e
+          rm -rf /tmp/upstream
           if [ -n "${{ env.UPSTREAM_REPO }}" ]; then
-            echo "Cloning upstream $UPSTREAM_REPO @ $UPSTREAM_BRANCH"
-            git clone --depth 1 -b "$UPSTREAM_BRANCH" "https://github.com/${UPSTREAM_REPO}.git" .
-            cp -rf .repo-overlay/config .repo-overlay/feeds.conf.append .repo-overlay/.github ./ 2>/dev/null || true
+            echo "Cloning upstream ${{ env.UPSTREAM_REPO }} @ ${{ env.UPSTREAM_BRANCH }}"
+            git clone --depth 1 -b "${{ env.UPSTREAM_BRANCH }}" "https://github.com/${{ env.UPSTREAM_REPO }}.git" /tmp/upstream
+            shopt -s dotglob
+            mv /tmp/upstream/* ./
+            rm -rf /tmp/upstream
+            mkdir -p config .github/workflows
+            cp -f .repo-overlay/config/*.config config/ 2>/dev/null || true
+            cp -f .repo-overlay/feeds.conf.append ./ 2>/dev/null || true
+            cp -f .repo-overlay/.github/workflows/*.yml .github/workflows/ 2>/dev/null || true
           else
-            # 方案 A: 当前 checkout 目录本身就是源码，把 overlay 内容移到位
             shopt -s dotglob
             mv .repo-overlay/* ./
           fi
           rm -rf .repo-overlay
           echo "--- version ---"
           cat version 2>/dev/null || true
+          ls config .github/workflows
 
       - name: Install build dependencies
         run: |
