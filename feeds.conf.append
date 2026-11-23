@@ -1,0 +1,6 @@
+# ============================================================================
+# 第三方 feed 追加（v3：全部锁 commit，可复现）
+# 固定于 2026-11-23；升级时把 ^ 后 sha 换成各自 main 最新
+# ============================================================================
+src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git^65ae3f5ec70c9613ae3ec41ee6e9baecb1828ff9
+src-git passwall2 https://github.com/Openwrt-Passwall/openwrt-passwall2.git^ccae1fd66e0b6528150d80fe6834b20ed2030db6
