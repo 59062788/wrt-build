@@ -40,7 +40,7 @@ on:
 
 env:
   # 方案 B 才需要填；方案 A 留空即可
-  UPSTREAM_REPO: "fanchmwrt/fanchmwrt"
+  UPSTREAM_REPO: ""
   UPSTREAM_BRANCH: "fanchmwrt-25.12.6"
   OPENCLASH_COMMIT: "e553e82e01c697aefbe1555261a503f425e00ccd"
 
@@ -55,28 +55,29 @@ jobs:
           fetch-depth: 1
           path: .repo-overlay
 
+      - name: Free disk space
+        run: |
+          set -x
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/powershell || true
+          sudo docker image prune -af || true
+          df -h /
+
       - name: Prepare OpenWrt source tree
         run: |
           set -e
-          rm -rf /tmp/upstream
           if [ -n "${{ env.UPSTREAM_REPO }}" ]; then
-            echo "Cloning upstream ${{ env.UPSTREAM_REPO }} @ ${{ env.UPSTREAM_BRANCH }}"
-            git clone --depth 1 -b "${{ env.UPSTREAM_BRANCH }}" "https://github.com/${{ env.UPSTREAM_REPO }}.git" /tmp/upstream
-            shopt -s dotglob
-            mv /tmp/upstream/* ./
-            rm -rf /tmp/upstream
-            mkdir -p config .github/workflows
-            cp -f .repo-overlay/config/*.config config/ 2>/dev/null || true
-            cp -f .repo-overlay/feeds.conf.append ./ 2>/dev/null || true
-            cp -f .repo-overlay/.github/workflows/*.yml .github/workflows/ 2>/dev/null || true
+            echo "Cloning upstream $UPSTREAM_REPO @ $UPSTREAM_BRANCH"
+            git clone --depth 1 -b "$UPSTREAM_BRANCH" "https://github.com/${UPSTREAM_REPO}.git" .
+            cp -rf .repo-overlay/config .repo-overlay/feeds.conf.append .repo-overlay/.github ./ 2>/dev/null || true
           else
+            # 方案 A: 当前 checkout 目录本身就是源码，把 overlay 内容移到位
             shopt -s dotglob
             mv .repo-overlay/* ./
           fi
           rm -rf .repo-overlay
           echo "--- version ---"
           cat version 2>/dev/null || true
-          ls config .github/workflows
 
       - name: Install build dependencies
         run: |
@@ -87,6 +88,17 @@ jobs:
             libssl-dev python3-distutils rsync unzip zlib1g-dev \
             file wget python3 python3-setuptools swig libyaml-dev \
             subversion pkg-config
+
+      - name: Cache downloads and ccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            dl
+            ~/.ccache
+            staging_dir/host/ccache
+          key: wrt-dl-${{ hashFiles('config/x86_64-full.config') }}
+          restore-keys: |
+            wrt-dl-
 
       - name: Append third-party feeds
         run: |
@@ -104,12 +116,8 @@ jobs:
         if: ${{ github.event.inputs.enable_openclash != 'false' }}
         run: |
           set -e
-          rm -rf /tmp/oc && mkdir -p /tmp/oc && cd /tmp/oc
-          git init -q
-          git remote add origin https://github.com/vernesong/OpenClash.git
-          git fetch -q --depth 1 origin "${{ env.OPENCLASH_COMMIT }}"
-          git checkout -q FETCH_HEAD
-          cd - >/dev/null
+          git clone https://github.com/vernesong/OpenClash.git /tmp/oc
+          git -C /tmp/oc checkout "${{ env.OPENCLASH_COMMIT }}"
           mkdir -p package/luci-app-openclash
           cp -r /tmp/oc/luci-app-openclash/. package/luci-app-openclash/
           ls package/luci-app-openclash
@@ -136,7 +144,10 @@ jobs:
           grep -E 'CONFIG_TARGET_x86|luci-app-passwall2|luci-app-openclash|ROOTFS_PARTSIZE' .config || true
 
       - name: Defconfig
-        run: make defconfig
+        run: |
+          echo "CONFIG_CCACHE=y" >> .config
+          make defconfig
+          grep -E '^CONFIG_CCACHE=' .config || true
 
       - name: Assert requested packages survived defconfig
         run: |
@@ -159,8 +170,20 @@ jobs:
 
       - name: Compile firmware
         run: |
+          set -o pipefail
           jobs="${{ github.event.inputs.make_jobs }}"
-          make -j"${jobs:-2}" V=s
+          df -h /
+          free -m
+          if ! make -j"${jobs:-4}" V=0 > /tmp/build.log 2>&1; then
+            echo "=== BUILD FAILED ==="
+            df -h /
+            tail -n 400 /tmp/build.log
+            grep -n -i "error \|no space left\|killed" /tmp/build.log | tail -n 40 || true
+            exit 1
+          fi
+          echo "=== BUILD OK, tail ==="
+          df -h /
+          tail -n 100 /tmp/build.log
 
       - name: List firmware outputs
         run: |
